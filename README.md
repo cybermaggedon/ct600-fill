@@ -28,6 +28,9 @@ Extra rules:
 - For 'put an X in the box if...' boxes, use `true` to indicate an
   X goes in the box.
 
+You don't have to have a box value in the input for every CT600 box.  To leave a box
+blank, just leave the field out of the input file.
+
 See `all-values.yaml` for an example which fills in every form box in the
 form.
 
