@@ -62,3 +62,8 @@ ct600:
 ```
   scripts/ct600-fill --input all-values.yaml --output output.pdf
 ```
+
+## Discuss
+
+Discord server if you want to discuss... https://discord.gg/3cAvPASS6p
+
