@@ -12,7 +12,6 @@ import yaml
 
 from PyPDF2 import PdfWriter, PdfReader
 
-from ct600_fill.computations import get_computations
 from ct600_fill.annotations import create_annotations, get_page, get_spec
 
 def create_pdf(outf, template, annotations):
@@ -39,8 +38,8 @@ parser = argparse.ArgumentParser(
     description="iXBRL to CT600"
 )
 parser.add_argument('--input', '-i',
-                    default="comps.html",
-                    help='Input computations file (default: comps.html)')
+                    default="form-values.yaml",
+                    help='Input computations file (default: form-values.yaml)')
 parser.add_argument('--output', '-o',
                     default="output.pdf",
                     help='Output PDF file')
