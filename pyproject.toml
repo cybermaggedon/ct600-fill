@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ct600-fill"
+version = "1.0"
+description = "Fill in a CT600 PDF form"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.6"
+authors = [
+    { name = "Cybermaggedon", email = "mark@cyberapocalypse.co.uk" },
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "PyPDF2",
+    "PyYAML",
+    "reportlab",
+]
+
+[project.urls]
+Homepage = "https://github.com/cybermaggedon/ct600-fill"
+
+[project.scripts]
+ct600-fill = "ct600_fill.cli:main"

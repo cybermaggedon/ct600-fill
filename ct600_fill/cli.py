@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+
+# Reads a UK corporation tax computations file (iXBRL containing HMRC
+# corporation tax schema), and annotates a CT600 PDF template with
+# the numbers.
+
+import sys
+import argparse
+import yaml
+
+from PyPDF2 import PdfWriter, PdfReader
+
+from ct600_fill.annotations import create_annotations, get_page, get_spec
+
+
+def create_pdf(outf, template, annotations):
+
+    output = PdfWriter()
+
+    for page in range(0, len(template.pages)):
+        page_data = template.pages[page]
+
+        if page in annotations:
+
+            overlay = get_page(annotations, page)
+
+            overlay_pdf = PdfReader(overlay)
+
+            page_data.merge_page(overlay_pdf.pages[0])
+
+        output.add_page(page_data)
+
+    output.write(outf)
+
+
+def main():
+
+    parser = argparse.ArgumentParser(
+        description="iXBRL to CT600"
+    )
+    parser.add_argument('--input', '-i',
+                        default="form-values.yaml",
+                        help='Input computations file (default: form-values.yaml)')
+    parser.add_argument('--output', '-o',
+                        default="output.pdf",
+                        help='Output PDF file')
+    parser.add_argument('--ct600', '-c',
+                        default="CT600.pdf",
+                        help='Input CT600 form')
+    parser.add_argument('--spec', '-s',
+                        default="spec.json",
+                        help='Annotation specificiations file (default: spec.json)')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                        help='Turn on verbose output.')
+
+    args = parser.parse_args()
+
+    form_values = open(args.input, "r").read()
+    values = yaml.safe_load(form_values)
+    sys.stderr.write("Read %s.\n" % args.input)
+
+    spec = get_spec(args.spec)
+    annotations = create_annotations(values, spec)
+
+    template = PdfReader(open(args.ct600, "rb"))
+    sys.stderr.write("Opened %s.\n" % args.ct600)
+
+    with open(args.output, "wb") as f:
+        create_pdf(f, template, annotations)
+
+    sys.stderr.write("Wrote %s.\n" % args.output)
