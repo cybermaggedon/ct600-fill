@@ -1,0 +1,368 @@
+#!/usr/bin/env python3
+
+"""
+Generate an updated spec.json for a new CT600 form based on coordinate
+comparison between old and new PDF forms.
+
+Uses the comparison.json output from compare-forms to compute deltas
+and apply them to the old spec.json, producing a spec-new.json.
+"""
+
+import json
+import os
+import sys
+
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def load_json(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def build_delta_map(comparison):
+    """
+    Build a mapping from box number to (page_change, dy) using comparison data.
+
+    Returns dict: {box_num: {"old_page": p, "new_page": p, "dy": float, "status": str}}
+    """
+    deltas = {}
+
+    # Unchanged fields: dy = 0
+    old_labels = comparison["old_labels"]
+    new_labels = comparison["new_labels"]
+
+    for num in comparison["unchanged"]:
+        snum = str(num)
+        deltas[num] = {
+            "old_page": old_labels[snum][0],
+            "new_page": new_labels[snum][0],
+            "dy": 0.0,
+            "status": "unchanged",
+        }
+
+    # Shifted fields: compute dy from label positions
+    for item in comparison["shifted"]:
+        num = item["box"]
+        deltas[num] = {
+            "old_page": item["old"][0],
+            "new_page": item["new"][0],
+            "dy": item["dy"],
+            "status": "shifted",
+        }
+
+    # Page-moved fields
+    for item in comparison["page_moved"]:
+        num = item["box"]
+        snum = str(num)
+        deltas[num] = {
+            "old_page": item["old"][0],
+            "new_page": item["new"][0],
+            "old_label_y": item["old"][2],
+            "new_label_y": item["new"][2],
+            "status": "page_moved",
+        }
+
+    return deltas
+
+
+def apply_delta_to_entry(entry, delta):
+    """
+    Apply a coordinate delta to a spec entry, returning a new entry.
+
+    Spec entry format: [field_num, "Type", page, ...coords]
+    The coords vary by type but all y-coordinates shift by the same dy.
+    """
+    field_num = entry[0]
+    ann_type = entry[1]
+    old_page = entry[2]
+    rest = list(entry[3:])
+
+    new_page = delta["new_page"]
+    status = delta["status"]
+
+    if status == "unchanged":
+        dy = 0.0
+    elif status == "shifted":
+        dy = delta["dy"]
+    elif status == "page_moved":
+        # For page-moved fields, compute dy from label positions
+        # offset = old_spec_y - old_label_y (how much spec y differs from label y)
+        # We approximate: the first y-coord in the spec entry is close to the label y
+        # So dy = new_label_y - old_label_y
+        old_label_y = delta["old_label_y"]
+        new_label_y = delta["new_label_y"]
+        dy = new_label_y - old_label_y
+    else:
+        dy = 0.0
+
+    # Apply dy to all y-coordinates based on annotation type
+    new_rest = adjust_coords(ann_type, rest, dy)
+
+    return [field_num, ann_type, new_page] + new_rest
+
+
+def adjust_coords(ann_type, coords, dy):
+    """Adjust y-coordinates in a spec entry's coord list by dy."""
+
+    coords = list(coords)
+
+    if ann_type in ("WriteString", "WriteNumber", "WriteBool", "WritePounds", "WriteMoney"):
+        # Format: x, y
+        coords[1] = round(coords[1] + dy, 1)
+
+    elif ann_type == "SpaceString":
+        # Format: x, y, pitch
+        coords[1] = round(coords[1] + dy, 1)
+
+    elif ann_type in ("SpacePounds", "SpaceZeroPadNumber"):
+        # Format: x, y, pitch, digits
+        coords[1] = round(coords[1] + dy, 1)
+
+    elif ann_type == "SpaceMoney":
+        # Format: x, y, x2, y2, pitch, digits
+        coords[1] = round(coords[1] + dy, 1)
+        coords[3] = round(coords[3] + dy, 1)
+
+    elif ann_type == "WriteSpaceDate":
+        # Format: x, y, x2, y2, x3, y3, pitch
+        coords[1] = round(coords[1] + dy, 1)
+        coords[3] = round(coords[3] + dy, 1)
+        coords[5] = round(coords[5] + dy, 1)
+
+    elif ann_type == "WriteSpaceSortCode":
+        # Format: x, y, x2, y2, x3, y3, pitch
+        coords[1] = round(coords[1] + dy, 1)
+        coords[3] = round(coords[3] + dy, 1)
+        coords[5] = round(coords[5] + dy, 1)
+
+    return coords
+
+
+def get_new_field_entries(comparison):
+    """
+    Generate spec entries for fields that only exist in the new form.
+
+    For each new field, we determine the annotation type and coordinates
+    based on the field's context and nearby existing fields.
+    """
+    new_labels = comparison["new_labels"]
+    entries = []
+
+    # Helper: for fields on pages 4-6 with SpaceMoney format,
+    # the typical x-coords are: pounds at 117.5, pence at 180.5, pitch 5.5, digits 11
+    SM_PARAMS = [117.5, None, 180.5, None, 5.5, 11]  # y values filled per field
+
+    # Helper: for fields on page 7 R&D section with SpacePounds,
+    # typical x=79.2, pitch=5.5, digits=18
+    SP_RD = {"x": 79.2, "pitch": 5.5, "digits": 18}
+
+    # Helper: for capital allowances SpacePounds (left column)
+    SP_CA_L = {"x": 60.5, "pitch": 5.5, "digits": 11}
+    # Helper: for capital allowances SpacePounds (right column)
+    SP_CA_R = {"x": 133.7, "pitch": 5.5, "digits": 11}
+
+    # Helper: for SpaceMoney on pages 5-6 (tax calc/reconciliation)
+    SM_TAX = {"x": 117.5, "x2": 180.5, "pitch": 5.5, "digits": 11}
+
+    for item in comparison["new_only"]:
+        box = item["box"]
+        page = item["pos"][0]
+        label_x = item["pos"][1]
+        label_y = item["pos"][2]
+
+        if box == 96:
+            # Creative industries - CT600P (checkbox, like other supplementary pages)
+            # On page 1, WriteBool, x=186 (far right checkbox column)
+            # label y = 114.0, typical offset ≈ -0.5
+            entries.append([96, "WriteBool", 1, 186, round(label_y - 0.5, 1)])
+
+        elif box == 502:
+            # EGL payable - SpaceMoney on page 5
+            # Near box 501. Use standard tax calc SpaceMoney layout.
+            y = round(label_y - 1.5, 1)
+            entries.append([502, "SpaceMoney", 5, 117.5, y, 180.5, y, 5.5, 11])
+
+        elif box == 541:
+            # AVEC/VGEC credit - SpaceMoney on page 5
+            y = round(label_y - 1.5, 1)
+            entries.append([541, "SpaceMoney", 5, 117.5, y, 180.5, y, 5.5, 11])
+
+        elif box == 614:
+            # AVEC/VGEC surrendered - SpaceMoney on page 6
+            y = round(label_y - 1.5, 1)
+            entries.append([614, "SpaceMoney", 6, 117.5, y, 180.5, y, 5.5, 11])
+
+        elif box == 653:
+            # R&D intensive SME - WriteBool on page 7
+            entries.append([653, "WriteBool", 7, 186.2, round(label_y - 0.5, 1)])
+
+        elif box == 658:
+            # Creatives additional info form submitted - WriteBool on page 7
+            entries.append([658, "WriteBool", 7, 186.2, round(label_y - 0.5, 1)])
+
+        elif box == 663:
+            # Creatives core expenditure - SpacePounds on page 7 (R&D section)
+            y = round(label_y - 1.0, 1)
+            entries.append([663, "SpacePounds", 7, 79.2, y, 5.5, 18])
+
+        elif box == 688:
+            # Full expensing - capital allowances (left column, page 7 now)
+            y = round(label_y - 1.0, 1)
+            entries.append([688, "SpacePounds", 7, 60.5, y, 5.5, 11])
+
+        elif box == 689:
+            # Full expensing - balancing charges (right column, page 7 now)
+            y = round(label_y - 1.0, 1)
+            entries.append([689, "SpacePounds", 7, 133.7, y, 5.5, 11])
+
+        elif box == 733:
+            # Full expensing - non-trading capital allowances (left, page 8)
+            y = round(label_y - 1.0, 1)
+            entries.append([733, "SpacePounds", 8, 60.5, y, 5.5, 11])
+
+        elif box == 734:
+            # Full expensing - non-trading balancing charges (right, page 8)
+            y = round(label_y - 1.0, 1)
+            entries.append([734, "SpacePounds", 8, 133.7, y, 5.5, 11])
+
+        elif box == 886:
+            # Payable AVEC/VGEC - SpaceMoney on page 10
+            y = round(label_y - 1.5, 1)
+            entries.append([886, "SpaceMoney", 10, 117.5, y, 180.5, y, 5.5, 11])
+
+        elif box == 943:
+            # R&D payable credit condition - WriteBool on page 11
+            entries.append([943, "WriteBool", 11, 186.2, round(label_y - 0.5, 1)])
+
+        elif box == 987:
+            # EGL exceptional generation receipts - SpacePounds on page 4
+            # Same format as 986 (SpacePounds with 11 digits)
+            y = round(label_y - 1.0, 1)
+            entries.append([987, "SpacePounds", 4, 117.5, y, 5.5, 11])
+
+    return entries
+
+
+def main():
+    spec_path = os.path.join(base_dir, "spec.json")
+    comp_path = os.path.join(base_dir, "comparison.json")
+    out_path = os.path.join(base_dir, "spec-new.json")
+
+    old_spec = load_json(spec_path)
+    comparison = load_json(comp_path)
+
+    deltas = build_delta_map(comparison)
+
+    # Known bugs in old spec to fix:
+    # 1. Line with [410, "WriteMoney", 3, 162, 16.5] should be [425, ...]
+    # 2. Second [500, "SpaceMoney", 5, ...] at y=246 should be [501, ...]
+    BUG_FIXES = {
+        # (field_num, page, approx_y) -> new_field_num
+        (410, 3, 16.5): 425,
+        (500, 5, 246): 501,
+    }
+
+    new_spec = []
+    seen_bug_fixes = set()
+
+    for entry in old_spec:
+        field_num = entry[0]
+        page = entry[2]
+
+        # Check for known bugs
+        # For SpaceMoney, y is at index 4; for WriteMoney, y is at index 4
+        if len(entry) > 4:
+            y_val = entry[4] if entry[1] == "SpaceMoney" else entry[4] if len(entry) > 4 else None
+        else:
+            y_val = entry[4] if len(entry) > 4 else None
+
+        # Try to match bug fixes
+        fixed_num = field_num
+        for (bf_num, bf_page, bf_y), bf_new_num in BUG_FIXES.items():
+            if field_num == bf_num and page == bf_page:
+                # Check y approximately
+                # For WriteMoney: [num, type, page, x, y] → y at index 4
+                # For SpaceMoney: [num, type, page, x, y, x2, y2, pitch, digits] → y at index 4
+                check_y = entry[4]
+                if abs(check_y - bf_y) < 1.0:
+                    fixed_num = bf_new_num
+                    seen_bug_fixes.add((bf_num, bf_page, bf_y))
+                    print(f"  Bug fix: box {bf_num} page {bf_page} y≈{bf_y} -> box {bf_new_num}")
+                    break
+
+        entry = list(entry)
+        entry[0] = fixed_num
+        field_num = fixed_num
+
+        if field_num in deltas:
+            new_entry = apply_delta_to_entry(entry, deltas[field_num])
+            new_spec.append(new_entry)
+        else:
+            # Field not found in comparison - might be a box number that doesn't
+            # appear as a label (e.g., sub-fields in the tax calc table).
+            # Look up by page to see if nearby fields have a consistent shift.
+            print(f"  Warning: box {field_num} not in comparison data, "
+                  f"checking page {page} for nearby shifts")
+
+            # Find average dy for fields on the same page
+            page_deltas = [d["dy"] for d in deltas.values()
+                          if d.get("new_page") == page and d["status"] == "shifted"]
+            if page_deltas:
+                avg_dy = sum(page_deltas) / len(page_deltas)
+                print(f"    Using average page {page} dy = {avg_dy:.1f}")
+                fake_delta = {"new_page": page, "dy": avg_dy, "status": "shifted"}
+                new_entry = apply_delta_to_entry(entry, fake_delta)
+                new_spec.append(new_entry)
+            else:
+                # No shift data - keep as-is
+                print(f"    No shift data for page {page}, keeping as-is")
+                new_spec.append(entry)
+
+    # Add new field entries
+    new_entries = get_new_field_entries(comparison)
+    print(f"\nAdding {len(new_entries)} new field entries:")
+    for entry in new_entries:
+        print(f"  Box {entry[0]}: {entry[1]} page {entry[2]}")
+
+    new_spec.extend(new_entries)
+
+    # Sort by page, then by y-coordinate (descending, since higher y = higher on page)
+    def sort_key(entry):
+        page = entry[2]
+        # Get first y-coordinate
+        if entry[1] in ("WriteString", "WriteNumber", "WriteBool", "WritePounds", "WriteMoney"):
+            y = entry[4]
+        elif entry[1] in ("SpaceString", "SpacePounds", "SpaceZeroPadNumber"):
+            y = entry[4]
+        elif entry[1] == "SpaceMoney":
+            y = entry[4]
+        elif entry[1] in ("WriteSpaceDate", "WriteSpaceSortCode"):
+            y = entry[4]
+        else:
+            y = 0
+        return (page, -y)
+
+    new_spec.sort(key=sort_key)
+
+    # Write output
+    with open(out_path, "w") as f:
+        f.write("[\n")
+        current_page = None
+        for i, entry in enumerate(new_spec):
+            page = entry[2]
+            if page != current_page:
+                if current_page is not None:
+                    f.write("\n")
+                current_page = page
+            comma = "," if i < len(new_spec) - 1 else ""
+            f.write(f"    {json.dumps(entry)}{comma}\n")
+        f.write("]\n")
+
+    print(f"\nNew spec written to: {out_path}")
+    print(f"  Old spec: {len(old_spec)} entries")
+    print(f"  New spec: {len(new_spec)} entries")
+
+
+if __name__ == "__main__":
+    main()
