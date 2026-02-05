@@ -31,8 +31,8 @@ Extra rules:
 You don't have to have a box value in the input for every CT600 box.  To leave a box
 blank, just leave the field out of the input file.
 
-See `all-values.yaml` for an example which fills in every form box in the
-form.
+The file `all-values.yaml` is a test values file which exercises all
+boxes on the form.
 
 Simple example input:
 ```
@@ -59,8 +59,22 @@ ct600:
 
 ## Usage
 
+Set up a virtual environment and install:
 ```
-  scripts/ct600-fill --input all-values.yaml --output output.pdf
+  python3 -m venv env
+  source env/bin/activate
+  pip install .
+```
+
+Run:
+```
+  ct600-fill --input all-values.yaml --output output.pdf
+```
+
+To specify a particular CT600 form and spec file (e.g. the 2025 version):
+```
+  ct600-fill --input all-values.yaml --output output.pdf \
+      --ct600 CT600-2025-v3.pdf --spec spec-ct600-2025-v3.json
 ```
 
 ## Discuss
